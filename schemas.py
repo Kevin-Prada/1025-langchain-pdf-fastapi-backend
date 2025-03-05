@@ -18,3 +18,9 @@ class PDFResponse(BaseModel):
 #For PDF QA    
 class QuestionRequest(BaseModel):
     question: str
+
+class PDFQuestion(BaseModel):
+    question: str
+
+class PDFQuestionAnswer(BaseModel):
+    answer: str

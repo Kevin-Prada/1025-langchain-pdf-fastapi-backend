@@ -65,7 +65,7 @@ async def summarize_text(text: str):
     return {'summary': response.text}
 
 @router.post("/qa-pdf/{pdf_id}", response_model=schemas.PDFQuestionAnswer)
-def qa_pdf(pdf_id: int, question: schemas.PDFQuestion, db: Session = Depends(get_db)):
+def qa_pdf(pdf_id: int, question_request: schemas.QuestionRequest, db: Session = Depends(get_db)):
     pdf = crud.read_pdf(db, pdf_id)
     if not pdf:
         raise HTTPException(status_code=404, detail="PDF no encontrado")
@@ -125,7 +125,7 @@ def qa_pdf(pdf_id: int, question: schemas.PDFQuestion, db: Session = Depends(get
         Contenido del PDF:
         {text[:10000]}  # Limitamos a 10000 caracteres para evitar exceder el límite de tokens
         
-        Pregunta: {question.question}
+        Pregunta: {question_request.question}
         
         Respuesta:
         """
