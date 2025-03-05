@@ -11,6 +11,9 @@ from PyPDF2 import PdfReader
 import requests
 from io import BytesIO
 import os
+import cloudinary
+import cloudinary.uploader
+import cloudinary.api
 
 # Configurar Gemini
 genai.configure(api_key=Settings().GEMINI_API_KEY)
@@ -81,27 +84,49 @@ def qa_pdf(pdf_id: int, question_request: schemas.QuestionRequest, db: Session =
         # Imprimir la URL para depuración
         print(f"Intentando descargar PDF desde: {pdf_url}")
         
-        # Descargar el PDF desde Cloudinary
-        response = requests.get(pdf_url, stream=True)
+        # Configurar Cloudinary para la descarga
+        cloudinary_instance = Settings.setup_cloudinary()
+        
+        # Intentar extraer el public_id de la URL
+        # Ejemplo: https://res.cloudinary.com/dyje6aftb/image/upload/v1741179607/pdfs/1735105a-ad1e-4312-b85f-7f5e8a824cf1-Breve...
+        parts = pdf_url.split('/upload/')
+        if len(parts) > 1:
+            public_id = parts[1].split('/', 1)[1]  # Obtener la parte después de v1741179607/
+            if public_id.endswith('.pdf.pdf'):
+                public_id = public_id[:-4]  # Eliminar el .pdf duplicado
+            
+            print(f"Public ID extraído: {public_id}")
+            
+            # Intentar descargar usando la API de Cloudinary
+            try:
+                # Descargar usando la API de Cloudinary
+                download_url = cloudinary.utils.cloudinary_url(public_id)[0]
+                print(f"URL de descarga generada: {download_url}")
+                response = requests.get(download_url)
+                
+                if response.status_code != 200:
+                    # Intentar con la URL original
+                    response = requests.get(pdf_url)
+                    if response.status_code != 200:
+                        # Intentar con URL alternativa (sin el .pdf duplicado)
+                        if pdf_url.endswith('.pdf.pdf'):
+                            alt_url = pdf_url[:-4]
+                            print(f"Intentando URL alternativa: {alt_url}")
+                            response = requests.get(alt_url)
+            except Exception as cloudinary_error:
+                print(f"Error al usar Cloudinary API: {str(cloudinary_error)}")
+                # Intentar con la URL directa como fallback
+                response = requests.get(pdf_url)
+        else:
+            # Si no podemos extraer el public_id, intentar con la URL directa
+            response = requests.get(pdf_url)
         
         # Verificar si la descarga fue exitosa
         if response.status_code != 200:
-            # Intentar con una URL alternativa (sin el .pdf duplicado al final)
-            if pdf_url.endswith(".pdf.pdf"):
-                pdf_url = pdf_url[:-4]  # Eliminar el último ".pdf"
-                print(f"Intentando URL alternativa: {pdf_url}")
-                response = requests.get(pdf_url, stream=True)
-                
-                if response.status_code != 200:
-                    raise HTTPException(
-                        status_code=500, 
-                        detail=f"Error al descargar el PDF: {response.status_code} {response.reason}"
-                    )
-            else:
-                raise HTTPException(
-                    status_code=500, 
-                    detail=f"Error al descargar el PDF: {response.status_code} {response.reason}"
-                )
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Error al descargar el PDF: {response.status_code} {response.reason}"
+            )
         
         # Guardar el PDF temporalmente
         temp_pdf_path = f"/tmp/{pdf_id}.pdf"
@@ -110,30 +135,40 @@ def qa_pdf(pdf_id: int, question_request: schemas.QuestionRequest, db: Session =
                 f.write(chunk)
         
         # Extraer texto del PDF
-        text = extract_text_from_pdf(temp_pdf_path)
-        
-        # Eliminar el archivo temporal
-        os.remove(temp_pdf_path)
+        try:
+            pdf_reader = PdfReader(temp_pdf_path)
+            text = ""
+            for page in pdf_reader.pages:
+                text += page.extract_text()
+        except Exception as pdf_error:
+            raise HTTPException(status_code=500, detail=f"Error al extraer texto del PDF: {str(pdf_error)}")
+        finally:
+            # Eliminar el archivo temporal
+            if os.path.exists(temp_pdf_path):
+                os.remove(temp_pdf_path)
         
         if not text:
             raise HTTPException(status_code=500, detail="No se pudo extraer texto del PDF")
         
-        # Crear el prompt para Gemini
+        # Si el texto es muy largo, podemos truncarlo para Gemini
+        if len(text) > 100000:  # Ajustar según los límites de Gemini
+            text = text[:100000]
+        
+        # Crear prompt para Gemini
         prompt = f"""
-        Basándote en el siguiente contenido de un PDF, responde a la pregunta.
+        Basado en el siguiente contenido del PDF "{pdf.name}":
         
-        Contenido del PDF:
-        {text[:10000]}  # Limitamos a 10000 caracteres para evitar exceder el límite de tokens
+        {text}
         
-        Pregunta: {question_request.question}
-        
-        Respuesta:
+        Responde a la siguiente pregunta: {question_request.question}
         """
         
         # Obtener respuesta de Gemini
-        response = get_gemini_response(prompt)
+        response = model.generate_content(prompt)
         
-        return {"answer": response}
+        return {"answer": response.text}
     
     except Exception as e:
+        import traceback
+        print(f"Error completo: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Error al procesar el PDF: {str(e)}")
