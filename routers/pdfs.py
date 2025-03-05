@@ -67,72 +67,73 @@ async def summarize_text(text: str):
     response = model.generate_content(prompt)
     return {'summary': response.text}
 
-@router.post("/qa-pdf/{pdf_id}", response_model=schemas.PDFQuestionAnswer)
-def qa_pdf(pdf_id: int, question_request: schemas.QuestionRequest, db: Session = Depends(get_db)):
-    pdf = crud.read_pdf(db, pdf_id)
-    if not pdf:
-        raise HTTPException(status_code=404, detail="PDF no encontrado")
+@router.post("/qa-pdf/{id}")
+def qa_pdf_by_id(id: int, question_request: schemas.QuestionRequest, db: Session = Depends(get_db)):
+    pdf = crud.read_pdf(db, id)
+    if pdf is None:
+        raise HTTPException(status_code=404, detail="PDF not found")
     
+    # Descargar el PDF desde Cloudinary
     try:
-        # Obtener la URL del PDF
-        pdf_url = pdf.file
-        
-        # Verificar si la URL es válida
-        if not pdf_url or not pdf_url.startswith("http"):
-            raise HTTPException(status_code=400, detail="URL del PDF no válida")
-        
-        # Imprimir la URL para depuración
-        print(f"Intentando descargar PDF desde: {pdf_url}")
-        
-        # Configurar Cloudinary para la descarga
+        # Configurar Cloudinary
         cloudinary_instance = Settings.setup_cloudinary()
         
-        # Intentar extraer el public_id de la URL
-        # Ejemplo: https://res.cloudinary.com/dyje6aftb/image/upload/v1741179607/pdfs/1735105a-ad1e-4312-b85f-7f5e8a824cf1-Breve...
-        parts = pdf_url.split('/upload/')
-        if len(parts) > 1:
-            public_id = parts[1].split('/', 1)[1]  # Obtener la parte después de v1741179607/
-            if public_id.endswith('.pdf.pdf'):
-                public_id = public_id[:-4]  # Eliminar el .pdf duplicado
-            
-            print(f"Public ID extraído: {public_id}")
-            
-            # Intentar descargar usando la API de Cloudinary
-            try:
-                # Descargar usando la API de Cloudinary
-                download_url = cloudinary.utils.cloudinary_url(public_id)[0]
-                print(f"URL de descarga generada: {download_url}")
-                response = requests.get(download_url)
-                
-                if response.status_code != 200:
-                    # Intentar con la URL original
-                    response = requests.get(pdf_url)
-                    if response.status_code != 200:
-                        # Intentar con URL alternativa (sin el .pdf duplicado)
-                        if pdf_url.endswith('.pdf.pdf'):
-                            alt_url = pdf_url[:-4]
-                            print(f"Intentando URL alternativa: {alt_url}")
-                            response = requests.get(alt_url)
-            except Exception as cloudinary_error:
-                print(f"Error al usar Cloudinary API: {str(cloudinary_error)}")
-                # Intentar con la URL directa como fallback
-                response = requests.get(pdf_url)
-        else:
-            # Si no podemos extraer el public_id, intentar con la URL directa
-            response = requests.get(pdf_url)
+        # Obtener la URL del PDF
+        pdf_url = pdf.file
+        print(f"URL del PDF: {pdf_url}")
         
-        # Verificar si la descarga fue exitosa
+        # Intentar descargar el PDF directamente
+        response = requests.get(pdf_url)
+        
+        # Si falla, intentar con una URL alternativa
+        if response.status_code != 200:
+            # Verificar si la URL termina con .pdf.pdf
+            if pdf_url.endswith('.pdf.pdf'):
+                alt_url = pdf_url[:-4]  # Eliminar el último .pdf
+                print(f"Intentando URL alternativa: {alt_url}")
+                response = requests.get(alt_url)
+        
+        # Si sigue fallando, intentar con la API de Cloudinary
+        if response.status_code != 200:
+            # Extraer el public_id de la URL
+            parts = pdf_url.split('/upload/')
+            if len(parts) > 1:
+                version_and_path = parts[1]
+                # Extraer la versión y el path
+                version_parts = version_and_path.split('/', 1)
+                if len(version_parts) > 1:
+                    path = version_parts[1]
+                    # Eliminar la extensión .pdf o .pdf.pdf
+                    if path.endswith('.pdf.pdf'):
+                        path = path[:-8]
+                    elif path.endswith('.pdf'):
+                        path = path[:-4]
+                    
+                    print(f"Public ID: {path}")
+                    
+                    # Generar una URL firmada
+                    signed_url = cloudinary.utils.cloudinary_url(path, resource_type="raw")[0]
+                    print(f"URL firmada: {signed_url}")
+                    
+                    response = requests.get(signed_url)
+        
+        # Si todavía falla, intentar con resource_type="image"
+        if response.status_code != 200:
+            signed_url = cloudinary.utils.cloudinary_url(path, resource_type="image")[0]
+            print(f"URL firmada (image): {signed_url}")
+            response = requests.get(signed_url)
+        
+        # Si sigue fallando, lanzar una excepción
         if response.status_code != 200:
             raise HTTPException(
-                status_code=500, 
-                detail=f"Error al descargar el PDF: {response.status_code} {response.reason}"
+                status_code=500,
+                detail=f"No se pudo descargar el PDF: {response.status_code} {response.reason}"
             )
         
         # Guardar el PDF temporalmente
-        temp_pdf_path = f"/tmp/{pdf_id}.pdf"
+        temp_pdf_path = f"/tmp/{id}.pdf"
         with open(temp_pdf_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
+            f.write(response.content)
         
         # Extraer texto del PDF
         try:
@@ -141,7 +142,10 @@ def qa_pdf(pdf_id: int, question_request: schemas.QuestionRequest, db: Session =
             for page in pdf_reader.pages:
                 text += page.extract_text()
         except Exception as pdf_error:
-            raise HTTPException(status_code=500, detail=f"Error al extraer texto del PDF: {str(pdf_error)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error al extraer texto del PDF: {str(pdf_error)}"
+            )
         finally:
             # Eliminar el archivo temporal
             if os.path.exists(temp_pdf_path):

@@ -20,7 +20,8 @@ class Settings(BaseSettings):
         cloudinary.config(
             cloud_name="dyje6aftb",
             api_key="175786421248115",
-            api_secret="LvO2ZGWpKMNzuVXrmcMgyC_HlPk"
+            api_secret="LvO2ZGWpKMNzuVXrmcMgyC_HlPk",
+            secure=True
         )
         return cloudinary
 
