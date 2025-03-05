@@ -2,7 +2,7 @@ from sqlalchemy.orm import Session
 from fastapi import UploadFile, HTTPException
 import models, schemas
 from config import Settings
-from botocore.exceptions import NoCredentialsError, BotoCoreError
+import cloudinary.uploader
 
 def create_pdf(db: Session, pdf: schemas.PDFRequest):
     db_pdf = models.PDF(name=pdf.name, selected=pdf.selected, file=pdf.file)
@@ -40,24 +40,27 @@ def delete_pdf(db: Session, id: int):
     return True
 
 def upload_pdf(db: Session, file: UploadFile, file_name: str):
-    s3_client = Settings.get_s3_client()
-    BUCKET_NAME = Settings().AWS_S3_BUCKET
+    # Configurar Cloudinary
+    cloudinary_instance = Settings.setup_cloudinary()
     
     try:
-        s3_client.upload_fileobj(
-            file.file,
-            BUCKET_NAME,
-            file_name
+        # Subir archivo a Cloudinary
+        contents = file.file.read()
+        upload_result = cloudinary.uploader.upload(
+            contents,
+            public_id=f"pdfs/{file_name}",
+            resource_type="auto"
         )
-        file_url = f'https://{BUCKET_NAME}.s3.amazonaws.com/{file_name}'
+        file_url = upload_result['secure_url']
         
+        # Guardar en la base de datos
         db_pdf = models.PDF(name=file.filename, selected=False, file=file_url)
         db.add(db_pdf)
         db.commit()
         db.refresh(db_pdf)
         return db_pdf
-    except NoCredentialsError:
-        raise HTTPException(status_code=500, detail="Error in AWS credentials")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al subir archivo: {str(e)}")
 
 
 # def upload_pdf(db: Session, file: UploadFile, file_name: str):
