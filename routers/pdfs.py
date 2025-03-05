@@ -10,6 +10,7 @@ from config import Settings
 from PyPDF2 import PdfReader
 import requests
 from io import BytesIO
+import os
 
 # Configurar Gemini
 genai.configure(api_key=Settings().GEMINI_API_KEY)
@@ -63,42 +64,76 @@ async def summarize_text(text: str):
     response = model.generate_content(prompt)
     return {'summary': response.text}
 
-@router.post("/qa-pdf/{id}")
-def qa_pdf_by_id(id: int, question_request: schemas.QuestionRequest, db: Session = Depends(get_db)):
-    pdf = crud.read_pdf(db, id)
-    if pdf is None:
-        raise HTTPException(status_code=404, detail="PDF not found")
+@router.post("/qa-pdf/{pdf_id}", response_model=schemas.PDFQuestionAnswer)
+def qa_pdf(pdf_id: int, question: schemas.PDFQuestion, db: Session = Depends(get_db)):
+    pdf = crud.read_pdf(db, pdf_id)
+    if not pdf:
+        raise HTTPException(status_code=404, detail="PDF no encontrado")
     
-    # Descargar el PDF desde Cloudinary
     try:
-        response = requests.get(pdf.file)
-        response.raise_for_status()
+        # Obtener la URL del PDF
+        pdf_url = pdf.file
+        
+        # Verificar si la URL es válida
+        if not pdf_url or not pdf_url.startswith("http"):
+            raise HTTPException(status_code=400, detail="URL del PDF no válida")
+        
+        # Imprimir la URL para depuración
+        print(f"Intentando descargar PDF desde: {pdf_url}")
+        
+        # Descargar el PDF desde Cloudinary
+        response = requests.get(pdf_url, stream=True)
+        
+        # Verificar si la descarga fue exitosa
+        if response.status_code != 200:
+            # Intentar con una URL alternativa (sin el .pdf duplicado al final)
+            if pdf_url.endswith(".pdf.pdf"):
+                pdf_url = pdf_url[:-4]  # Eliminar el último ".pdf"
+                print(f"Intentando URL alternativa: {pdf_url}")
+                response = requests.get(pdf_url, stream=True)
+                
+                if response.status_code != 200:
+                    raise HTTPException(
+                        status_code=500, 
+                        detail=f"Error al descargar el PDF: {response.status_code} {response.reason}"
+                    )
+            else:
+                raise HTTPException(
+                    status_code=500, 
+                    detail=f"Error al descargar el PDF: {response.status_code} {response.reason}"
+                )
+        
+        # Guardar el PDF temporalmente
+        temp_pdf_path = f"/tmp/{pdf_id}.pdf"
+        with open(temp_pdf_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
         
         # Extraer texto del PDF
-        pdf_file = BytesIO(response.content)
-        pdf_reader = PdfReader(pdf_file)
+        text = extract_text_from_pdf(temp_pdf_path)
         
-        text = ""
-        for page in pdf_reader.pages:
-            text += page.extract_text()
+        # Eliminar el archivo temporal
+        os.remove(temp_pdf_path)
         
-        # Si el texto es muy largo, podemos truncarlo para Gemini
-        if len(text) > 100000:  # Ajustar según los límites de Gemini
-            text = text[:100000]
+        if not text:
+            raise HTTPException(status_code=500, detail="No se pudo extraer texto del PDF")
         
-        # Crear prompt para Gemini
+        # Crear el prompt para Gemini
         prompt = f"""
-        Basado en el siguiente contenido del PDF "{pdf.name}":
+        Basándote en el siguiente contenido de un PDF, responde a la pregunta.
         
-        {text}
+        Contenido del PDF:
+        {text[:10000]}  # Limitamos a 10000 caracteres para evitar exceder el límite de tokens
         
-        Responde a la siguiente pregunta: {question_request.question}
+        Pregunta: {question.question}
+        
+        Respuesta:
         """
         
         # Obtener respuesta de Gemini
-        response = model.generate_content(prompt)
+        response = get_gemini_response(prompt)
         
-        return {"answer": response.text}
+        return {"answer": response}
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error al procesar el PDF: {str(e)}")

@@ -2,6 +2,7 @@ import os
 import cloudinary
 import cloudinary.uploader
 from pydantic_settings import BaseSettings
+import cloudinary.api
 
 class Settings(BaseSettings):
     DATABASE_HOST: str
