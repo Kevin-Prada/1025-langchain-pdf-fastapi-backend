@@ -83,96 +83,124 @@ def qa_pdf_by_id(id: int, question_request: schemas.QuestionRequest, db: Session
         print(f"URL del PDF: {pdf_url}")
         
         # Intentar descargar el PDF directamente
-        response = requests.get(pdf_url)
-        
-        # Si falla, intentar con una URL alternativa
-        if response.status_code != 200:
-            # Verificar si la URL termina con .pdf.pdf
-            if pdf_url.endswith('.pdf.pdf'):
-                alt_url = pdf_url[:-4]  # Eliminar el último .pdf
-                print(f"Intentando URL alternativa: {alt_url}")
-                response = requests.get(alt_url)
-        
-        # Si sigue fallando, intentar con la API de Cloudinary
-        if response.status_code != 200:
-            # Extraer el public_id de la URL
-            parts = pdf_url.split('/upload/')
-            if len(parts) > 1:
-                version_and_path = parts[1]
-                # Extraer la versión y el path
-                version_parts = version_and_path.split('/', 1)
-                if len(version_parts) > 1:
-                    path = version_parts[1]
-                    # Eliminar la extensión .pdf o .pdf.pdf
-                    if path.endswith('.pdf.pdf'):
-                        path = path[:-8]
-                    elif path.endswith('.pdf'):
-                        path = path[:-4]
-                    
-                    print(f"Public ID: {path}")
-                    
-                    # Generar una URL firmada
-                    signed_url = cloudinary.utils.cloudinary_url(path, resource_type="raw")[0]
-                    print(f"URL firmada: {signed_url}")
-                    
-                    response = requests.get(signed_url)
-        
-        # Si todavía falla, intentar con resource_type="image"
-        if response.status_code != 200:
-            signed_url = cloudinary.utils.cloudinary_url(path, resource_type="image")[0]
-            print(f"URL firmada (image): {signed_url}")
-            response = requests.get(signed_url)
-        
-        # Si sigue fallando, lanzar una excepción
-        if response.status_code != 200:
-            raise HTTPException(
-                status_code=500,
-                detail=f"No se pudo descargar el PDF: {response.status_code} {response.reason}"
-            )
-        
-        # Guardar el PDF temporalmente
-        temp_pdf_path = f"/tmp/{id}.pdf"
-        with open(temp_pdf_path, 'wb') as f:
-            f.write(response.content)
-        
-        # Extraer texto del PDF
         try:
-            pdf_reader = PdfReader(temp_pdf_path)
+            response = requests.get(pdf_url)
+            print(f"Respuesta directa: {response.status_code}")
+            
+            # Si falla, intentar con una URL alternativa
+            if response.status_code != 200:
+                # Verificar si la URL termina con .pdf.pdf
+                if pdf_url.endswith('.pdf.pdf'):
+                    alt_url = pdf_url[:-4]  # Eliminar el último .pdf
+                    print(f"Intentando URL alternativa: {alt_url}")
+                    response = requests.get(alt_url)
+                    print(f"Respuesta alternativa: {response.status_code}")
+            
+            # Si sigue fallando, intentar con la API de Cloudinary
+            if response.status_code != 200:
+                # Extraer el public_id de la URL
+                parts = pdf_url.split('/upload/')
+                if len(parts) > 1:
+                    version_and_path = parts[1]
+                    # Extraer la versión y el path
+                    version_parts = version_and_path.split('/', 1)
+                    if len(version_parts) > 1:
+                        path = version_parts[1]
+                        # Eliminar la extensión .pdf o .pdf.pdf
+                        if path.endswith('.pdf.pdf'):
+                            path = path[:-8]
+                        elif path.endswith('.pdf'):
+                            path = path[:-4]
+                        
+                        print(f"Public ID: {path}")
+                        
+                        # Intentar descargar directamente desde Cloudinary usando la API
+                        try:
+                            # Intentar obtener el recurso para verificar que existe
+                            resource = cloudinary.api.resource(path, resource_type="raw")
+                            print(f"Recurso encontrado: {resource}")
+                            
+                            # Generar una URL firmada
+                            signed_url = cloudinary.utils.cloudinary_url(path, resource_type="raw")[0]
+                            print(f"URL firmada: {signed_url}")
+                            
+                            response = requests.get(signed_url)
+                            print(f"Respuesta URL firmada: {response.status_code}")
+                        except Exception as cloud_error:
+                            print(f"Error al obtener recurso raw: {str(cloud_error)}")
+                            
+                            # Intentar con resource_type="image"
+                            try:
+                                resource = cloudinary.api.resource(path, resource_type="image")
+                                print(f"Recurso imagen encontrado: {resource}")
+                                
+                                signed_url = cloudinary.utils.cloudinary_url(path, resource_type="image")[0]
+                                print(f"URL firmada (image): {signed_url}")
+                                
+                                response = requests.get(signed_url)
+                                print(f"Respuesta URL firmada (image): {response.status_code}")
+                            except Exception as img_error:
+                                print(f"Error al obtener recurso image: {str(img_error)}")
+                                
+                                # Intentar con resource_type="auto"
+                                try:
+                                    # Intentar descargar directamente
+                                    direct_url = f"https://res.cloudinary.com/{Settings().CLOUDINARY_CLOUD_NAME}/raw/upload/{path}"
+                                    print(f"Intentando URL directa: {direct_url}")
+                                    response = requests.get(direct_url)
+                                    print(f"Respuesta URL directa: {response.status_code}")
+                                except Exception as auto_error:
+                                    print(f"Error al descargar directamente: {str(auto_error)}")
+            
+            # Si sigue fallando, intentar subir el PDF nuevamente
+            if response.status_code != 200:
+                # Intentar recuperar el PDF original y subirlo de nuevo
+                print("Intentando recuperar y resubir el PDF...")
+                
+                # Modificar la URL en la base de datos para usar el nuevo PDF
+                # Esto es solo un ejemplo, necesitarías implementar la lógica real
+                # para resubir el PDF y actualizar la URL en la base de datos
+                
+                raise HTTPException(
+                    status_code=500,
+                    detail="No se pudo descargar el PDF. Por favor, sube el archivo nuevamente."
+                )
+            
+            # Extraer texto del PDF
+            pdf_file = BytesIO(response.content)
+            pdf_reader = PdfReader(pdf_file)
+            
             text = ""
             for page in pdf_reader.pages:
                 text += page.extract_text()
-        except Exception as pdf_error:
+            
+            # Si el texto es muy largo, podemos truncarlo para Gemini
+            if len(text) > 100000:  # Ajustar según los límites de Gemini
+                text = text[:100000]
+            
+            # Crear prompt para Gemini
+            prompt = f"""
+            Basado en el siguiente contenido del PDF "{pdf.name}":
+            
+            {text}
+            
+            Responde a la siguiente pregunta: {question_request.question}
+            """
+            
+            # Obtener respuesta de Gemini
+            response = model.generate_content(prompt)
+            
+            return {"answer": response.text}
+            
+        except requests.exceptions.RequestException as req_error:
+            print(f"Error de solicitud HTTP: {str(req_error)}")
             raise HTTPException(
                 status_code=500,
-                detail=f"Error al extraer texto del PDF: {str(pdf_error)}"
+                detail=f"Error al descargar el PDF: {str(req_error)}"
             )
-        finally:
-            # Eliminar el archivo temporal
-            if os.path.exists(temp_pdf_path):
-                os.remove(temp_pdf_path)
-        
-        if not text:
-            raise HTTPException(status_code=500, detail="No se pudo extraer texto del PDF")
-        
-        # Si el texto es muy largo, podemos truncarlo para Gemini
-        if len(text) > 100000:  # Ajustar según los límites de Gemini
-            text = text[:100000]
-        
-        # Crear prompt para Gemini
-        prompt = f"""
-        Basado en el siguiente contenido del PDF "{pdf.name}":
-        
-        {text}
-        
-        Responde a la siguiente pregunta: {question_request.question}
-        """
-        
-        # Obtener respuesta de Gemini
-        response = model.generate_content(prompt)
-        
-        return {"answer": response.text}
     
     except Exception as e:
         import traceback
-        print(f"Error completo: {traceback.format_exc()}")
+        error_trace = traceback.format_exc()
+        print(f"Error completo: {error_trace}")
         raise HTTPException(status_code=500, detail=f"Error al procesar el PDF: {str(e)}")
