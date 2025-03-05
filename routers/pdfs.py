@@ -7,6 +7,9 @@ from database import SessionLocal
 from uuid import uuid4
 import google.generativeai as genai
 from config import Settings
+from PyPDF2 import PdfReader
+import requests
+from io import BytesIO
 
 # Configurar Gemini
 genai.configure(api_key=Settings().GEMINI_API_KEY)
@@ -66,13 +69,36 @@ def qa_pdf_by_id(id: int, question_request: schemas.QuestionRequest, db: Session
     if pdf is None:
         raise HTTPException(status_code=404, detail="PDF not found")
     
-    # Aquí implementarías la lógica para extraer el texto del PDF
-    # y usar Gemini para responder preguntas
+    # Descargar el PDF desde Cloudinary
+    try:
+        response = requests.get(pdf.file)
+        response.raise_for_status()
+        
+        # Extraer texto del PDF
+        pdf_file = BytesIO(response.content)
+        pdf_reader = PdfReader(pdf_file)
+        
+        text = ""
+        for page in pdf_reader.pages:
+            text += page.extract_text()
+        
+        # Si el texto es muy largo, podemos truncarlo para Gemini
+        if len(text) > 100000:  # Ajustar según los límites de Gemini
+            text = text[:100000]
+        
+        # Crear prompt para Gemini
+        prompt = f"""
+        Basado en el siguiente contenido del PDF "{pdf.name}":
+        
+        {text}
+        
+        Responde a la siguiente pregunta: {question_request.question}
+        """
+        
+        # Obtener respuesta de Gemini
+        response = model.generate_content(prompt)
+        
+        return {"answer": response.text}
     
-    prompt = f"""
-    Basado en el siguiente documento PDF: {pdf.file}
-    Responde a la siguiente pregunta: {question_request.question}
-    """
-    
-    response = model.generate_content(prompt)
-    return response.text
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al procesar el PDF: {str(e)}")
