@@ -46,12 +46,18 @@ def upload_pdf(db: Session, file: UploadFile, file_name: str):
     try:
         # Subir archivo a Cloudinary
         contents = file.file.read()
+        
+        # Asegurarse de que el archivo se suba como raw para PDFs
         upload_result = cloudinary.uploader.upload(
             contents,
             public_id=f"pdfs/{file_name}",
-            resource_type="auto"
+            resource_type="raw",  # Usar raw en lugar de auto para PDFs
+            use_filename=True,
+            unique_filename=True
         )
+        
         file_url = upload_result['secure_url']
+        print(f"PDF subido exitosamente: {file_url}")
         
         # Guardar en la base de datos
         db_pdf = models.PDF(name=file.filename, selected=False, file=file_url)
@@ -60,6 +66,9 @@ def upload_pdf(db: Session, file: UploadFile, file_name: str):
         db.refresh(db_pdf)
         return db_pdf
     except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"Error al subir archivo: {error_trace}")
         raise HTTPException(status_code=500, detail=f"Error al subir archivo: {str(e)}")
 
 

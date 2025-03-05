@@ -145,7 +145,7 @@ def qa_pdf_by_id(id: int, question_request: schemas.QuestionRequest, db: Session
                                 # Intentar con resource_type="auto"
                                 try:
                                     # Intentar descargar directamente
-                                    direct_url = f"https://res.cloudinary.com/{Settings().CLOUDINARY_CLOUD_NAME}/raw/upload/{path}"
+                                    direct_url = f"https://res.cloudinary.com/dyje6aftb/raw/upload/{path}"
                                     print(f"Intentando URL directa: {direct_url}")
                                     response = requests.get(direct_url)
                                     print(f"Respuesta URL directa: {response.status_code}")
